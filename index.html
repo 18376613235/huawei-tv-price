@@ -127,6 +127,18 @@
     <div class="empty" id="tableEmpty" style="display:none">暂无数据，等待采集…</div>
   </div>
 
+  <div class="panel" id="otherPanel" style="display:none">
+    <h2>📦 其他在售商品 <span class="hint" id="otherHint"></span></h2>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>商品标题</th><th>价格</th><th>想要</th><th>成色</th><th>链接</th></tr>
+        </thead>
+        <tbody id="otherTbody"></tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="panel">
     <h2>📈 每日价格趋势 <span class="hint" id="chartHint">显示所选型号的每日最低价走势</span></h2>
     <div class="chart" id="chart"></div>
@@ -243,6 +255,25 @@ function renderStats(summary){
     <div class="stat"><div class="k">最热门(想要最多)</div><div class="v">${fmt(s.mostWant.wantTotal)}<small> ${hot}</small></div></div>`;
 }
 
+function renderOthers(summary){
+  const others=(summary&&summary.otherItems)||[];
+  const panel=$('otherPanel');
+  if(!others.length){ panel.style.display='none'; return; }
+  panel.style.display='';
+  $('otherHint').textContent=`共 ${others.length} 件（智慧屏以外的在售商品）`;
+  $('otherTbody').innerHTML=others.map(it=>{
+    const p=it.priceNum!=null?fmt(it.priceNum):esc(it.price||'');
+    const url=`https://www.goofish.com/item?id=${esc(it.itemId)}`;
+    return `<tr>
+      <td><a class="item-link" href="${url}" target="_blank" title="${esc(it.title)}">${esc(it.title)}</a></td>
+      <td><span class="price"><span class="yuan">¥</span>${p}</span></td>
+      <td class="want"><b>${fmt(it.want)}</b></td>
+      <td><span class="cond">${esc(it.condition||'其他')}</span></td>
+      <td><a href="${url}" target="_blank">查看 ↗</a></td>
+    </tr>`;
+  }).join('');
+}
+
 function renderTable(){
   const q=searchQuery.trim().toLowerCase();
   const items=summary.items.filter(r=>{
@@ -352,6 +383,7 @@ async function loadAll(){
       $('tableEmpty').style.display='block';
       $('tableEmpty').textContent=(summary&&summary.scrapedAt)?'数据为空':'暂无数据，等待首次采集…';
     }
+    renderOthers(summary);
   }catch(e){}
   try{
     const h=await loadHistory(currentUid);
