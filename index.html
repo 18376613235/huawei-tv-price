@@ -29,6 +29,13 @@
   .btn.on{background:var(--green)}
   .btn:disabled{opacity:.5;cursor:wait}
   .wrap{max-width:1180px;margin:0 auto;padding:14px 16px 80px}
+  .store-tabs{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+  .store-tab{flex:1;min-width:200px;border:1px solid var(--border);background:var(--card);border-radius:12px;padding:12px 16px;cursor:pointer;text-align:left;transition:.15s}
+  .store-tab:hover{border-color:var(--orange2)}
+  .store-tab.active{background:linear-gradient(135deg,var(--orange),var(--orange2));color:#fff;border-color:transparent;box-shadow:0 4px 12px rgba(255,80,0,.3)}
+  .store-tab .nm{font-size:15px;font-weight:700;display:flex;align-items:center;gap:6px}
+  .store-tab .meta{font-size:12px;opacity:.75;margin-top:3px}
+  .store-tab small{font-weight:400;font-size:12px}
   .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:16px}
   .stat{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 14px}
   .stat .k{font-size:12px;color:var(--sub)}
@@ -67,6 +74,7 @@
   @media(max-width:700px){
     .item-link{max-width:180px}
     .chart{height:320px}
+    .store-tab{min-width:150px}
   }
 </style>
 </head>
@@ -74,7 +82,7 @@
 <header>
   <div class="head-row">
     <h1>📺 华为智慧屏 · 每日价格看板</h1>
-    <span class="store-tag" id="storeTag">数据源：八号当铺</span>
+    <span class="store-tag" id="storeTag">数据源：—</span>
     <div class="search">
       <input id="q" placeholder="搜索型号 / 尺寸 / 成色 / 关键词…" autocomplete="off">
       <button onclick="doSearch()">搜索</button>
@@ -88,6 +96,8 @@
 </header>
 
 <div class="wrap">
+  <div class="store-tabs" id="storeTabs"></div>
+
   <div class="stats" id="stats"></div>
 
   <div class="filters">
@@ -131,25 +141,56 @@ let searchQuery='';
 let summary=null, historySeries={};
 let selected=new Set();
 let chart=null;
+let STATIC_MODE=false;
+let stores=[], currentUid=null;
+const __D=window.__DATA__;  // 纯离线单文件模式下的内联数据（动态部署时为 undefined）
 
 function esc(s){return String(s||'').replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]))}
 function fmt(n){return (n||0).toLocaleString('zh-CN')}
 function yuan(n){return '¥'+fmt(n)}
 
-let STATIC_MODE=false;
-// 优先读本地后端 /api，读不到（纯静态部署）则 fallback 到同目录 data.json
-async function loadEndpoint(name){
-  try{
-    const r=await fetch(API+'/'+name,{cache:'no-store'});
-    if(r.ok){ const j=await r.json(); if(j&&!j.static) return j; }
-  }catch(e){}
-  try{
-    const r=await fetch('./data.json',{cache:'no-store'});
-    if(r.ok){ const j=await r.json(); if(j&&j[name]!==undefined){ STATIC_MODE=true; return j[name]; } }
-  }catch(e){}
+// —— 数据加载：优先本地 /api，读不到则 fallback 到静态 data.json ——
+async function fetchJson(url){
+  try{ const r=await fetch(url,{cache:'no-store'}); if(r.ok) return await r.json(); }catch(e){}
+  return null;
+}
+async function loadStores(){
+  if(__D && __D.stores && __D.stores.length){ STATIC_MODE=true; return {stores:__D.stores, def:(__D.stores[0]&&__D.stores[0].userId), static:true}; }
+  // 动态接口
+  let j=await fetchJson(API+'/stores');
+  if(j && j.stores && j.stores.length) return {stores:j.stores, def:j.default, static:false};
+  // 静态包
+  j=await fetchJson('./data.json');
+  if(j && j.stores && j.stores.length){ STATIC_MODE=true; return {stores:j.stores, def:(j.stores[0]&&j.stores[0].userId), static:true}; }
+  return null;
+}
+async function loadSummary(uid){
+  if(__D && __D.summaries && __D.summaries[uid]!==undefined){ STATIC_MODE=true; return __D.summaries[uid]; }
+  let j=await fetchJson(API+'/summary?store='+uid);
+  if(j && !j.static) return j;
+  j=await fetchJson('./data.json');
+  if(j && j.summaries && j.summaries[uid]!==undefined){ STATIC_MODE=true; return j.summaries[uid]; }
+  return null;
+}
+async function loadHistory(uid){
+  if(__D && __D.histories && __D.histories[uid]!==undefined){ STATIC_MODE=true; return __D.histories[uid]; }
+  let j=await fetchJson(API+'/history?store='+uid);
+  if(j && !j.static) return j;
+  j=await fetchJson('./data.json');
+  if(j && j.histories && j.histories[uid]!==undefined){ STATIC_MODE=true; return j.histories[uid]; }
+  return null;
+}
+async function loadStatus(){
+  if(__D && __D.status!==undefined){ STATIC_MODE=true; return __D.status; }
+  let j=await fetchJson(API+'/status');
+  if(j && !j.static) return j;
+  j=await fetchJson('./data.json');
+  if(j && j.status!==undefined){ STATIC_MODE=true; return j.status; }
   return null;
 }
 async function post(p){return (await fetch(API+p,{method:'POST',cache:'no-store'})).json()}
+
+function fmtTime(s){ if(!s) return '—'; return String(s).replace('T',' ').slice(5,16); }
 
 function changeHtml(row){
   if(row.change===null || row.change===undefined) return '<span class="flat">—</span>';
@@ -157,6 +198,12 @@ function changeHtml(row){
   const pct=row.changePct!==null&&row.changePct!==undefined?` (${row.changePct>0?'+':''}${row.changePct}%)`:'';
   if(row.change>0) return `<span class="up">涨 +¥${fmt(row.change)}${pct}</span>`;
   return `<span class="down">跌 -¥${fmt(-row.change)}${pct}</span>`;
+}
+
+function resetFilterChips(){
+  sizeFilter='all'; familyFilter='all';
+  document.querySelectorAll('[data-size]').forEach(c=>c.classList.toggle('active',c.dataset.size==='all'));
+  document.querySelectorAll('[data-family]').forEach(c=>c.classList.toggle('active',c.dataset.family==='all'));
 }
 
 function renderFilters(summary){
@@ -185,7 +232,7 @@ function renderFilters(summary){
 }
 
 function renderStats(summary){
-  const s=summary.stats;
+  const s=summary.stats||{};
   if(!summary.items.length){ $('stats').innerHTML=''; return; }
   const cheap=s.cheapest?`${s.cheapest.model} ${s.cheapest.size}英寸`:'—';
   const hot=s.mostWant?`${s.mostWant.model} ${s.mostWant.size}英寸`:'—';
@@ -255,7 +302,6 @@ function renderChart(){
       lineStyle:{width:2}, connectNulls:false
     };
   });
-  const modelNames=list.map(k=>k).join(' · ');
   $('chartHint').textContent=list.length?`显示 ${list.length} 个型号的每日最低价走势`:'点击上方表格行选择型号查看趋势';
   chart.setOption({
     tooltip:{trigger:'axis', valueFormatter:v=>'¥'+fmt(v)},
@@ -268,26 +314,49 @@ function renderChart(){
   },true);
 }
 
+function renderStoreTabs(){
+  const el=$('storeTabs');
+  if(!stores.length){ el.innerHTML=''; return; }
+  el.innerHTML=stores.map(s=>{
+    const act=s.userId===currentUid?' active':'';
+    const time=s.scrapedAt?fmtTime(s.scrapedAt):'未采集';
+    return `<button class="store-tab${act}" data-uid="${esc(s.userId)}" onclick="switchStore('${esc(s.userId)}')">
+      <div class="nm">🏪 ${esc(s.name)} <small>${s.tvCount||0} 件智慧屏</small></div>
+      <div class="meta">更新于 ${time}</div>
+    </button>`;
+  }).join('');
+}
+
+async function switchStore(uid){
+  if(uid===currentUid) return;
+  currentUid=uid;
+  selected.clear();
+  searchQuery=''; if($('q')) $('q').value='';
+  resetFilterChips();
+  renderStoreTabs();
+  await loadAll();
+}
+
 async function loadAll(){
   try{
-    summary=await loadEndpoint('summary');
-    if(summary.items && summary.items.length){
-      $('storeTag').textContent='数据源：'+(summary.store||'八号当铺');
+    summary=await loadSummary(currentUid);
+    if(summary && summary.items && summary.items.length){
+      $('storeTag').textContent='数据源：'+(summary.store||'—');
       renderFilters(summary);
       renderStats(summary);
       renderTable();
     } else {
+      $('storeTag').textContent='数据源：'+(summary&&summary.store?summary.store:'—');
       $('stats').innerHTML='';
       $('tbody').innerHTML='';
       $('tableEmpty').style.display='block';
-      $('tableEmpty').textContent=summary.scrapedAt?('数据为空'):'暂无数据，等待首次采集…';
+      $('tableEmpty').textContent=(summary&&summary.scrapedAt)?'数据为空':'暂无数据，等待首次采集…';
     }
   }catch(e){}
   try{
-    const h=await loadEndpoint('history');
+    const h=await loadHistory(currentUid);
     historySeries=h.series||{};
     if(selected.size===0 && historySeries){
-      // 默认选中想要数最高的前 6 个型号
       const keys=Object.keys(historySeries);
       const order=(summary&&summary.items)?summary.items.filter(r=>keys.includes(r.key)).sort((a,b)=>b.wantTotal-a.wantTotal).map(r=>r.key):keys;
       order.slice(0,6).forEach(k=>selected.add(k));
@@ -299,36 +368,33 @@ async function loadAll(){
   }catch(e){}
 }
 
-function fmtTime(s){ if(!s) return '—'; return s.replace('T',' ').slice(5,16); }
-async function loadStatus(){
-  try{
-    const st=await loadEndpoint('status');
-    if(!st) return;
-    if(st.static){
-      STATIC_MODE=true;
-      $('status').innerHTML='📡 云端静态快照 · 更新于 <b>'+fmtTime(st.scrapedAt)+'</b> · 本地开机自动同步';
-      $('btnRefresh').style.display='none';
-      $('btnAuto').style.display='none';
-      return;
-    }
-    $('btnRefresh').style.display='';
-    $('btnAuto').style.display='';
-    const running=st.running?'🟠 采集中…':'🟢 空闲';
-    const last=fmtTime(st.lastRun);
-    const next=fmtTime(st.nextRun);
-    $('status').innerHTML=`${running} · 上次采集 <b>${last}</b> · 下次 <b>${next}</b> · 间隔 ${st.refreshMinutes}分钟`+
-      (st.error?` · <span style="color:#ffd">⚠ ${esc(st.error)}</span>`:'')+
-      (st.lastMsg?` · ${esc(st.lastMsg.slice(0,40))}`:'');
-    $('btnAuto').textContent='自动刷新:'+(st.autoRefresh?'开':'关');
-    $('btnAuto').classList.toggle('on',st.autoRefresh);
-    $('btnRefresh').disabled=st.running;
-  }catch(e){}
+async function initStatus(){
+  const st=await loadStatus();
+  if(!st) return;
+  if(st.static){
+    STATIC_MODE=true;
+    $('status').innerHTML='📡 云端静态快照 · 更新于 <b>'+fmtTime(st.scrapedAt)+'</b> · 本地开机自动同步';
+    $('btnRefresh').style.display='none';
+    $('btnAuto').style.display='none';
+    return;
+  }
+  $('btnRefresh').style.display='';
+  $('btnAuto').style.display='';
+  const running=st.running?'🟠 采集中…':'🟢 空闲';
+  const last=fmtTime(st.lastRun);
+  const next=fmtTime(st.nextRun);
+  $('status').innerHTML=`${running} · 上次采集 <b>${last}</b> · 下次 <b>${next}</b> · 间隔 ${st.refreshMinutes}分钟`+
+    (st.error?` · <span style="color:#ffd">⚠ ${esc(st.error)}</span>`:'')+
+    (st.lastMsg?` · ${esc(st.lastMsg.slice(0,40))}`:'');
+  $('btnAuto').textContent='自动刷新:'+(st.autoRefresh?'开':'关');
+  $('btnAuto').classList.toggle('on',st.autoRefresh);
+  $('btnRefresh').disabled=st.running;
 }
 
 async function manualRefresh(){
   $('btnRefresh').disabled=true; $('btnRefresh').textContent='采集中…';
   await post('/refresh');
-  setTimeout(()=>{loadStatus();loadAll();},3000);
+  setTimeout(()=>{initStatus();loadStores().then(s=>{stores=s.stores;renderStoreTabs();});loadAll();},3000);
 }
 async function toggleAuto(){
   const r=await post('/toggleAuto');
@@ -339,13 +405,19 @@ async function toggleAuto(){
 window.addEventListener('load',async()=>{
   chart=echarts.init($('chart'));
   window.addEventListener('resize',()=>chart.resize());
-  // 搜索框：实时过滤 + 回车搜索
   $('q').addEventListener('input',()=>{ searchQuery=$('q').value.trim(); renderTable(); });
   $('q').addEventListener('keydown',e=>{ if(e.key==='Enter') doSearch(); });
+
+  const st=await loadStores();
+  if(st && st.stores.length){
+    stores=st.stores;
+    currentUid=st.def||st.stores[0].userId;
+    renderStoreTabs();
+  }
   await loadAll();
-  await loadStatus();
-  setInterval(loadAll,30000);   // 每 30 秒刷新价格
-  setInterval(loadStatus,10000); // 每 10 秒刷新采集状态
+  await initStatus();
+  setInterval(loadAll,30000);    // 每 30 秒刷新价格
+  setInterval(initStatus,10000); // 每 10 秒刷新采集状态
 });
 </script>
 </body>
